@@ -10,19 +10,27 @@ module Dismantle.X86.Operands (
   YMMR,
   ZMMR,
   Displacement,
+  Segment,
   MemRef(..),
   disp8,
   disp32,
   noDisplacement,
   -- * Register definitions
   pattern RAX,
-  pattern EAX
+  pattern EAX,
+  -- * Segments
+  pattern ES,
+  pattern CS,
+  pattern SS,
+  pattern DS,
+  pattern FS,
+  pattern GS
   ) where
 
 import GHC.TypeLits ( Nat )
 
 import Data.Int ( Int8, Int32 )
-import Data.Word ( Word8 )
+import Data.Word ( Word8, Word64 )
 
 newtype GPR (w :: Nat) = GPR Word8
   deriving (Eq, Ord)
@@ -39,8 +47,30 @@ disp32 = Displacement
 noDisplacement :: Displacement 0
 noDisplacement = Displacement 0
 
-data MemRef (rw :: Nat) (dw :: Nat) = IPRelative (Displacement dw)
-                                    | MemRef (Maybe (GPR rw)) (Maybe (Int, GPR rw)) (Displacement dw)
+newtype Segment = Segment Word8
+  deriving (Eq, Ord)
+
+pattern ES :: Segment
+pattern ES = Segment 0
+
+pattern CS :: Segment
+pattern CS = Segment 1
+
+pattern SS :: Segment
+pattern SS = Segment 2
+
+pattern DS :: Segment
+pattern DS = Segment 3
+
+pattern FS :: Segment
+pattern FS = Segment 4
+
+pattern GS :: Segment
+pattern GS = Segment 5
+
+data MemRef (rw :: Nat) (dw :: Nat) = IPRelative Segment (Displacement dw)
+                                    | MemRef Segment (Maybe (GPR rw)) (Maybe (Int, GPR rw)) (Displacement dw)
+                                    | Offset Segment Word64
 
 pattern RAX :: GPR 64
 pattern RAX = GPR 0
