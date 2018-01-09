@@ -41,8 +41,7 @@ import qualified Text.PrettyPrint.HughesPJClass as PP
 import           Data.Parameterized.Some ( Some(..) )
 import qualified Data.Parameterized.Map as PM
 import           Data.Parameterized.Lift ( LiftF(..) )
-import qualified Data.Parameterized.SymbolRepr as SR
-import           Data.Parameterized.HasRepr ( HasRepr(..) )
+import qualified Data.Parameterized.HasRepr as HR
 import qualified Data.Parameterized.List as SL
 import qualified Data.Parameterized.TH.GADT as PTH
 import           Data.EnumF ( EnumF(..), enumCompareF )
@@ -84,12 +83,14 @@ genISA isa path overridePaths = do
   operandType <- mkOperandType isa desc >>= sequence
   opcodeType <- mkOpcodeType desc >>= sequence
   instrTypes <- mkInstructionAliases
+  reprType <- mkReprType isa
   setWrapperType <- [d| newtype NESetWrapper o p = NESetWrapper { unwrapNESet :: (NES.Set ($(conT $ mkName "Opcode") o p)) } |]
   ppDef <- mkPrettyPrinter desc
   parserDef <- mkParser isa desc path
   asmDef <- mkAssembler isa desc
   return $ concat [ operandType
                   , opcodeType
+                  , [reprType]
                   , setWrapperType
                   , instrTypes
                   , ppDef
@@ -526,13 +527,43 @@ mkOpcodeShowFInstance = do
              |]
   return showf
 
+operandReprName :: Name
+operandReprName = mkName "OperandRepr"
+
+-- | Create a GADT where each constructor acts as a repr for an operand.  For a
+-- hypothetical architecture with two operand types, @GPR@ and @IMM16@, this
+-- type will look like:
+--
+-- > data OperandRepr tp where
+-- >   GPRRepr :: OperandRepr "GPR"
+-- >   IMM16Repr :: OperandRepr "IMM16"
+--
+-- Pattern matching on these constructors will recover the type level string
+-- corresponding to that operand type, and suitable for matching against
+-- type-level operand lists.
+--
+-- This type also acts as the repr type in the 'HasRepr' instance.
+mkReprType :: ISA -> Q Dec
+mkReprType isa = do
+  tpVarName <- newName "tp"
+  let cons = map mkReprCon (isaOperandPayloadTypes isa)
+  dataDCompat (cxt []) operandReprName [PlainTV tpVarName] cons []
+  where
+    mkReprCon (opTyName, _payloadDesc) = do
+      let n = opcodeReprName opTyName
+      let ty = [t| $(conT operandReprName) $(litT (strTyLit opTyName)) |]
+      gadtC [n] [] ty
+
+opcodeReprName :: String -> Name
+opcodeReprName opTyName = mkName (opTyName ++ "Repr")
+
 -- | Create an instance of 'KnownParameter ShapeRepr' for the opcode type
 mkHasReprInstance :: ISADescriptor -> Q Dec
 mkHasReprInstance desc = do
   operandTyVar <- newName "o"
-  hasReprTy <- [t| HasRepr ($(conT opcodeTypeName) $(varT operandTyVar)) (SL.List SR.SymbolRepr) |]
+  hasReprTy <- [t| HR.HasRepr ($(conT opcodeTypeName) $(varT operandTyVar)) (SL.List $(conT operandReprName)) |]
   let clauses = map mkHasReprCase (isaInstructions desc)
-  dec <- funD 'typeRepr clauses
+  dec <- funD 'HR.typeRepr clauses
   return (InstanceD Nothing [] hasReprTy [dec])
   where
     mkHasReprCase i = do
