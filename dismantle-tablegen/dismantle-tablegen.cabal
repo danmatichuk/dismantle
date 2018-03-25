@@ -60,6 +60,7 @@ library
                        tasty-hunit,
                        tasty-expected-failure,
                        megaparsec >= 6 && < 7,
+                       attoparsec >= 0.13 && < 0.14,
                        regex >= 1 && < 2,
                        mtl >= 2 && < 3,
                        parameterized-utils >= 1 && < 2

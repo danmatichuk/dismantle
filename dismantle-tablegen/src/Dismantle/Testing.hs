@@ -26,7 +26,7 @@ import Numeric ( showIntAtBase )
 import System.FilePath.Glob ( namesMatching )
 import System.FilePath ( (</>) )
 import qualified System.Process as Proc
-import qualified Text.Megaparsec as P
+import qualified Data.Attoparsec.Text.Lazy as P
 import System.IO (hClose)
 import qualified Text.RE.TDFA as RE
 import qualified Text.PrettyPrint.HughesPJClass as PP
@@ -206,12 +206,17 @@ withDisassembledFile :: Parser Disassembly -> Maybe [String] -> FilePath -> (Dis
 withDisassembledFile parser customArgs f k = do
   (_, Just hout, _, ph) <- Proc.createProcess p1
   t <- TL.hGetContents hout
-  case P.runParser parser f t of
-    Left err -> do
+  case P.parse parser t of
+    P.Fail rest ctx err -> do
       hClose hout
       _ <- Proc.waitForProcess ph
-      error $ P.parseErrorPretty err
-    Right d -> do
+      error $ concat [ err
+                     , " "
+                     , show ctx
+                     , " with remaining "
+                     , show (TL.take 40 rest)
+                     ]
+    P.Done _ d -> do
       res <- k d
       hClose hout
       _ <- Proc.waitForProcess ph

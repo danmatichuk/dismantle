@@ -11,18 +11,17 @@ module Dismantle.Testing.Parser (
 import Control.Applicative
 import Control.Monad ( replicateM, replicateM_, void )
 import qualified Data.ByteString.Lazy as LBS
-import qualified Data.List.NonEmpty as NL
+import           Data.Char ( isHexDigit )
 import Data.Monoid ((<>))
 import Data.Maybe ( catMaybes )
+import qualified Data.Text as T
 import qualified Data.Text.Lazy as TL
 import Data.Word ( Word8, Word64 )
-import qualified Text.Megaparsec as P
-import qualified Text.Megaparsec.Char as P
+import qualified Data.Attoparsec.Text.Lazy as P
 import Text.Read ( readMaybe )
-
 import Prelude
 
-type Parser = P.Parsec (P.ErrorItem Char) TL.Text
+type Parser = P.Parser
 
 data Disassembly = Disassembly { sections :: [Section] }
   deriving (Show)
@@ -56,40 +55,47 @@ data InstructionLayout =
 
 objdumpParser :: Parser Disassembly
 objdumpParser =
-  consumeHeader *> (Disassembly <$> P.sepEndBy parseSection P.space) <* P.eof
+  consumeHeader *> (Disassembly <$> P.many1 parseSection) <* P.endOfInput
 
 consumeLine :: Parser ()
-consumeLine = void (P.manyTill P.anyChar P.eol)
+consumeLine = void (P.manyTill P.anyChar P.endOfLine)
 
 consumeHeader :: Parser ()
-consumeHeader = replicateM_ 2 consumeLine >> P.space
+consumeHeader = replicateM_ 2 consumeLine >> P.skipSpace
 
 parseSectionName :: Parser TL.Text
-parseSectionName = TL.pack <$> P.some sectionNameChar
+parseSectionName = TL.pack <$> P.many1 sectionNameChar
 
 tryOne :: [Parser a] -> Parser a
 tryOne = P.choice . map P.try
 
+alphaNumChar :: Parser Char
+alphaNumChar = tryOne [ P.digit, P.letter ]
+
+oneOf :: [Char] -> P.Parser Char
+oneOf cs = P.satisfy (`elem` cs)
+
 sectionNameChar :: Parser Char
-sectionNameChar = tryOne [ P.alphaNumChar
-                         , P.oneOf ['.', '_']
+sectionNameChar = tryOne [ alphaNumChar
+                         , oneOf ['.', '_']
                          ]
 
 -- | Characters that can appear in symbol names, including symbol
 -- names that are an offset from another symbol.
 symbolNameChar :: Parser Char
-symbolNameChar = tryOne [ P.alphaNumChar
-                        , P.oneOf ['@', '-', '_', '.']
+symbolNameChar = tryOne [ alphaNumChar
+                        , oneOf ['-', '@', '_', '.']
                         ]
 
 parseSection :: Parser Section
 parseSection = do
-  _ <- P.string (TL.pack "Disassembly of section ")
+  _ <- P.string (T.pack "Disassembly of section ") P.<?> "Disassembly of section"
   sn <- parseSectionName
   _ <- P.char ':'
-  _ <- P.eol
+  _ <- P.endOfLine
   consumeLine
-  insns <- catMaybes <$> P.some tryParseInstruction
+  insns <- catMaybes <$> P.many1 tryParseInstruction
+  P.skipSpace
   return Section { sectionName = sn
                  , instructions = insns
                  }
@@ -108,7 +114,7 @@ parseJunkData = do
   P.skipMany (P.char ' ')
   void parseAddress
   void $ P.char ':'
-  P.space
+  P.skipSpace
 
   -- We have seen character data lines like these and want to ignore
   -- them:
@@ -121,14 +127,17 @@ parseJunkData = do
          , parseWord >> void (P.char ' ') >> void parseWord
          ]
 
-  void $ P.manyTill P.anyChar P.eol
-  void $ P.optional P.eol
+  void $ P.manyTill P.anyChar P.endOfLine
+  void $ optional P.endOfLine
 
   return Nothing
 
+ellipses :: Parser T.Text
+ellipses = P.string (T.pack "...") P.<?> "ellipses"
+
 parseEllipses :: Parser (Maybe a)
-parseEllipses = tryOne [ P.space >> P.string (TL.pack "...") >> P.eol >> P.eol >> return Nothing
-                       , P.space >> P.string (TL.pack "...") >> P.eol >> return Nothing
+parseEllipses = tryOne [ P.skipSpace >> ellipses >> P.endOfLine >> P.endOfLine >> return Nothing
+                       , P.skipSpace >> ellipses >> P.endOfLine >> return Nothing
                        ]
 
 parseInstructionBytes :: Parser ([Word8], InstructionLayout)
@@ -172,14 +181,14 @@ parseThumbHalf =
 -- Objdump sometimes emits these lines for thumb disassemblies.
 parseAddressOutOfBounds :: Parser (Maybe Instruction)
 parseAddressOutOfBounds = do
-  P.space
+  P.skipSpace
   void parseAddress
   void $ P.char ':'
-  P.space
-  void $ P.string $ TL.pack "Address 0x"
+  P.skipSpace
+  void (P.string (T.pack "Address 0x") P.<?> "Address 0x")
   void parseAddress
-  void $ P.string $ TL.pack " is out of bounds."
-  void $ replicateM 3 P.eol
+  void (P.string (T.pack " is out of bounds.") P.<?> "is out of bounds")
+  void $ replicateM 3 P.endOfLine
   return Nothing
 
 parseInstruction :: Parser (Maybe Instruction)
@@ -187,11 +196,11 @@ parseInstruction = do
   P.skipMany (P.char ' ')
   addr <- parseAddress
   _ <- P.char ':'
-  P.space
+  P.skipSpace
   (bytes, layout) <- parseInstructionBytes
-  P.space
-  txt <- TL.pack <$> P.manyTill P.anyChar P.eol
-  _ <- P.optional P.eol
+  P.skipSpace
+  txt <- TL.pack <$> P.manyTill P.anyChar P.endOfLine
+  _ <- optional P.endOfLine
   case isDataDirective txt || isUndefinedInstruction txt of
     True -> return Nothing
     False ->
@@ -220,23 +229,22 @@ isUndefinedInstruction t =
 parseFunctionHeading :: Parser (Maybe a)
 parseFunctionHeading = do
   _ <- parseAddress
-  _ <- P.string (TL.pack " <")
-  _ <- P.some symbolNameChar
-  _ <- P.string (TL.pack ">:")
-  _ <- P.eol
+  _ <- P.string (T.pack " <") P.<?> "parseFunctionHeading <start>"
+  _ <- P.many1 symbolNameChar
+  _ <- P.string (T.pack ">:") P.<?> "parseFunctionHeading <end>"
+  _ <- P.endOfLine
   return Nothing
 
 parseAddress :: Parser Word64
-parseAddress = do
-  digits@(d:rest) <- P.some P.hexDigitChar
-  case readMaybe ('0' : 'x' : digits) of
-    Just w -> return w
-    Nothing -> P.unexpected (P.Tokens (d NL.:| rest))
+parseAddress = P.hexadecimal
+
+hexDigitChar :: Parser Char
+hexDigitChar = P.satisfy isHexDigit
 
 parseByte :: Parser Word8
 parseByte = do
-  d1 <- P.hexDigitChar
-  d2 <- P.hexDigitChar
+  d1 <- hexDigitChar
+  d2 <- hexDigitChar
   case readMaybe ('0' : 'x' : d1 : d2 : []) of
     Just b -> return b
-    Nothing -> P.unexpected (P.Tokens (d1 NL.:| [d2]))
+    Nothing -> fail "Invalid byte"
